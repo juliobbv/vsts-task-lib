@@ -58,6 +58,42 @@ export interface IExecSyncResult {
     error: Error;
 }
 
+class PendingState {
+    constructor(
+        pipeOutputToTool: boolean,
+        pipeOutputToFile: boolean) {
+
+        this.processExit = pipeOutputToTool ? 2 : 1;
+        this.processClose = this.processExit;
+        this.file = pipeOutputToTool && pipeOutputToFile ? 1 : 0;
+    }
+
+    // private error: Error;
+    // private execOptions: IExecOptions;
+    processExit: number; // occurs when a process exits
+    processClose: number; // occurs after a process exits and the streams are closed
+    file: number;
+    // private returnCode: number;
+    // private returnCodeFirst: number;
+    // private success: boolean = true;
+    // private successFirst: boolean = true;
+    // stderr: boolean;
+    // stderrFirst: boolean;
+
+    public CheckComplete(defer: Q.Deferred<number>, returnCode: number, error: Error): void {
+        if (this.processClose == 0 && this.file == 0) {
+            if (error) {
+                defer.reject(error);
+            } else {
+                defer.resolve(returnCode);
+            }
+        }
+        else if (this.processExit == 0 && this.file == 0) {
+            // todo:
+        }
+    }
+}
+
 export class ToolRunner extends events.EventEmitter {
     constructor(toolPath) {
         super();
@@ -580,22 +616,21 @@ export class ToolRunner extends events.EventEmitter {
             this._debug('   ' + arg);
         });
 
-        let success = true;
         options = this._cloneExecOptions(options);
 
         if (!options.silent) {
             options.outStream.write(this._getCommandString(options) + os.EOL);
         }
 
-        // TODO: filter process.env
         let cp;
         let toolPath: string = this.toolPath;
         let toolPathFirst: string;
-        let successFirst = true;
-        let returnCodeFirst: number;
         let fileStream: fs.WriteStream;
-        let waitingEvents: number = 0; // number of process or stream events we are waiting on to complete
+        let pending = new PendingState(!!this.pipeOutputToTool, !!this.pipeOutputToFile);
+        // let success = true;
+        // let successFirst = true;
         let returnCode: number = 0;
+        let returnCodeFirst: number;
         let error;
 
         if (this.pipeOutputToTool) {
@@ -605,14 +640,12 @@ export class ToolRunner extends events.EventEmitter {
             // Following node documentation example from this link on how to pipe output of one process to another
             // https://nodejs.org/api/child_process.html#child_process_child_process_spawn_command_args_options
 
-            //start the child process for both tools
-            waitingEvents++;
-            var cpFirst = child.spawn(
+            // start the child process for both tools
+            let cpFirst = child.spawn(
                 this._getSpawnFileName(),
                 this._getSpawnArgs(options),
                 this._getSpawnOptions(options));
-            
-            waitingEvents ++;
+
             cp = child.spawn(
                 this.pipeOutputToTool._getSpawnFileName(),
                 this.pipeOutputToTool._getSpawnArgs(options),
@@ -620,33 +653,20 @@ export class ToolRunner extends events.EventEmitter {
 
             fileStream = this.pipeOutputToFile ? fs.createWriteStream(this.pipeOutputToFile) : null;
             if (fileStream) {
-                waitingEvents ++;
                 fileStream.on('finish', () => {
-                    waitingEvents--; //file write is complete
+                    pending.file--;
                     fileStream = null;
-                    if(waitingEvents == 0) {
-                        if (error) {
-                            defer.reject(error);
-                        } else {
-                            defer.resolve(returnCode);
-                        }
-                    }
+                    pending.CheckComplete(defer, returnCode, error);
                 });
                 fileStream.on('error', (err) => {
-                    waitingEvents--; //there were errors writing to the file, write is done
+                    pending.file--; // there were errors writing to the file, write is done
                     this._debug(`Failed to pipe output of ${toolPathFirst} to file ${this.pipeOutputToFile}. Error = ${err}`);
                     fileStream = null;
-                    if(waitingEvents == 0) {
-                        if (error) {
-                            defer.reject(error);
-                        } else {
-                            defer.resolve(returnCode);
-                        }
-                    }
+                    pending.CheckComplete(defer, returnCode, error);
                 })
             }
 
-            //pipe stdout of first tool to stdin of second tool
+            // pipe stdout of first tool to stdin of second tool
             cpFirst.stdout.on('data', (data: Buffer) => {
                 try {
                     if (fileStream) {
@@ -658,6 +678,7 @@ export class ToolRunner extends events.EventEmitter {
                     this._debug(toolPath + ' might have exited due to errors prematurely. Verify the arguments passed are valid.');
                 }
             });
+
             cpFirst.stderr.on('data', (data: Buffer) => {
                 if (fileStream) {
                     fileStream.write(data);
@@ -668,40 +689,41 @@ export class ToolRunner extends events.EventEmitter {
                     s.write(data);
                 }
             });
+
             cpFirst.on('error', (err) => {
-                waitingEvents--; //first process is complete with errors
+                pending.processClose--; // first process is complete with errors
+                pending.processExit--;
                 if (fileStream) {
                     fileStream.end();
                 }
                 cp.stdin.end();
                 error = new Error(toolPathFirst + ' failed. ' + err.message);
-                if(waitingEvents == 0) {
-                    defer.reject(error);
-                }
+                pending.CheckComplete(defer, null, error);
             });
+
+            cpFirst.on('exit', (code, signal) => {
+                pending.processExit--; // first process exited
+                // todo: ?
+                pending.CheckComplete(defer, null, error)
+            });
+
             cpFirst.on('close', (code, signal) => {
-                waitingEvents--; //first process is complete
+                pending.processClose--; // first process is complete
                 if (code != 0 && !options.ignoreReturnCode) {
                     successFirst = false;
                     returnCodeFirst = code;
-                    returnCode = returnCodeFirst;
+                    if (!returnCode) {
+                        returnCode = returnCodeFirst;
+                    }
                 }
                 this._debug('success of first tool:' + successFirst);
                 if (fileStream) {
                     fileStream.end();
                 }
                 cp.stdin.end();
-                if(waitingEvents == 0) {
-                    if (error) {
-                        defer.reject(error);
-                    } else {
-                        defer.resolve(returnCode);
-                    }
-                }
+                pending.CheckComplete(defer, returnCode, error);
             });
-
         } else {
-            waitingEvents++;
             cp = child.spawn(this._getSpawnFileName(), this._getSpawnArgs(options), this._getSpawnOptions(options));
         }
 
@@ -734,7 +756,7 @@ export class ToolRunner extends events.EventEmitter {
         });
 
         cp.on('error', (err) => {
-            waitingEvents--; //process is done with errors
+            waitingEvents--; // process is done with errors
             error = new Error(toolPath + ' failed. ' + err.message);
             if(waitingEvents == 0) {
                 defer.reject(error);
@@ -742,7 +764,7 @@ export class ToolRunner extends events.EventEmitter {
         });
 
         cp.on('close', (code, signal) => {
-            waitingEvents--; //process is complete
+            waitingEvents--; // process is complete
             this._debug('rc:' + code);
             returnCode = code;
 
@@ -760,7 +782,7 @@ export class ToolRunner extends events.EventEmitter {
 
             this._debug('success:' + success);
                 
-            if (!successFirst) { //in the case output is piped to another tool, check exit code of both tools
+            if (!successFirst) { // in the case output is piped to another tool, check exit code of both tools
                 error = new Error(toolPathFirst + ' failed with return code: ' + returnCodeFirst);
             } else if (!success) {
                 error = new Error(toolPath + ' failed with return code: ' + code);
