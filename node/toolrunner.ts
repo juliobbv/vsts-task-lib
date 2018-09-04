@@ -58,38 +58,103 @@ export interface IExecSyncResult {
     error: Error;
 }
 
-class PendingState {
+class ExecState {
     constructor(
-        pipeOutputToTool: boolean,
-        pipeOutputToFile: boolean) {
+        defer: Q.Deferred<number>,
+        options: IExecOptions,
+        toolPath: string,
+        toolPath2: string,
+        filePath: string) {
 
-        this.processExit = pipeOutputToTool ? 2 : 1;
-        this.processClose = this.processExit;
-        this.file = pipeOutputToTool && pipeOutputToFile ? 1 : 0;
-    }
+        if (!toolPath) {
+            throw new Error('toolPath must not be empty');
+        }
 
-    // private error: Error;
-    // private execOptions: IExecOptions;
-    processExit: number; // occurs when a process exits
-    processClose: number; // occurs after a process exits and the streams are closed
-    file: number;
-    // private returnCode: number;
-    // private returnCodeFirst: number;
-    // private success: boolean = true;
-    // private successFirst: boolean = true;
-    // stderr: boolean;
-    // stderrFirst: boolean;
+        if (!toolPath2 && filePath) {
+            throw new Error('filePath must not be supplied when toolPath2 is empty');
+        }
 
-    public CheckComplete(defer: Q.Deferred<number>, returnCode: number, error: Error): void {
-        if (this.processClose == 0 && this.file == 0) {
-            if (error) {
-                defer.reject(error);
-            } else {
-                defer.resolve(returnCode);
+        this.defer = defer;
+        this.options = options;
+        this.toolPath = toolPath;
+
+        if (toolPath2) {
+            this.toolPath2 = toolPath2;
+
+            if (this.filePath) {
+                this.filePath = filePath;
             }
         }
+    }
+
+    fileClosed: boolean; // tracks whether the file has closed
+    processClosed: boolean; // tracks whether the process has exited and stdio is closed
+    processError: string;
+    processExitCode: number;
+    processExited: boolean; // tracks whether the process has exited
+    processStderr: boolean; // tracks whether stderr was written to
+    process2Closed: boolean;
+    process2Error: string;
+    process2ExitCode: number;
+    process2Exited: boolean;
+    process2Stderr: boolean;
+    private readonly delay: number = 10; // seconds
+    private defer: Q.Deferred<number>;
+    private done: boolean;
+    private error: Error;
+    private filePath: string;
+    private options: IExecOptions;
+    private toolPath: string;
+    private toolPath2: string;
+
+    public CheckComplete(): void {
+
+        if (this.toolPath2) {
+            if (this.processClosed && this.process2Closed && this.fileClosed) {
+            }
+            else if (this.processExited && this.process2Exited && this.fileClosed) {
+            }
+        }
+        else if (this.processClosed) {
+            if (this.processError) {
+                let error = new Error(`Tool '${this.toolPath}' failed. ${this.processError}`);
+                this.defer.reject(this.error);
+            }
+            else if (this.processExitCode != 0 && !this.options.ignoreReturnCode) {
+                // if (code != 0 && !options.ignoreReturnCode) {
+                //     success = false;
+                // }
+
+                // this._debug('success:' + success);
+                    
+                // if (!successFirst) { // in the case output is piped to another tool, check exit code of both tools
+                //     error = new Error(toolPathFirst + ' failed with return code: ' + returnCodeFirst);
+                // }
+                // else if (!success) {
+                //     error = new Error(toolPath + ' failed with return code: ' + code);
+                // }
+            }
+        }
+        //successFirst = !options.failOnStdErr;
+        //error = new Error(toolPathFirst + ' failed. ' + err.message);
+        if (this.processClose == 0 && this.file == 0) {
+            if (this.error) {
+                this.defer.reject(this.error);
+            } else {
+                this.defer.resolve(this.returnCode);
+            }
+
+            this.done = true;
+        }
         else if (this.processExit == 0 && this.file == 0) {
-            // todo:
+            setTimeout(this._timeout, this.delay * 1000);
+        }
+    }
+
+    private _timeout() {
+        if (!this.done) {
+            console.log(`The process exited but stdio streams have not closed after ${this.delay} seconds`)
+            this.done = true;
         }
     }
 }
@@ -610,32 +675,29 @@ export class ToolRunner extends events.EventEmitter {
     public exec(options?: IExecOptions): Q.Promise<number> {
         var defer = Q.defer<number>();
 
-        this._debug('exec tool: ' + this.toolPath);
-        this._debug('arguments:');
+        this._debug('Exec tool: ' + this.toolPath);
+        this._debug('Arguments:');
         this.args.forEach((arg) => {
             this._debug('   ' + arg);
         });
 
         options = this._cloneExecOptions(options);
-
         if (!options.silent) {
             options.outStream.write(this._getCommandString(options) + os.EOL);
         }
 
         let cp;
-        let toolPath: string = this.toolPath;
-        let toolPathFirst: string;
         let fileStream: fs.WriteStream;
-        let pending = new PendingState(!!this.pipeOutputToTool, !!this.pipeOutputToFile);
-        // let success = true;
-        // let successFirst = true;
-        let returnCode: number = 0;
-        let returnCodeFirst: number;
-        let error;
+        let state = new ExecState(
+            defer,
+            options,
+            this.toolPath,
+            this.pipeOutputToTool ? this.pipeOutputToTool.toolPath : null, // toolPath2
+            this.pipeOutputToFile);
 
         if (this.pipeOutputToTool) {
-            toolPath = this.pipeOutputToTool.toolPath;
-            toolPathFirst = this.toolPath;
+            //toolPath = this.pipeOutputToTool.toolPath;
+            //toolPathFirst = this.toolPath;
 
             // Following node documentation example from this link on how to pipe output of one process to another
             // https://nodejs.org/api/child_process.html#child_process_child_process_spawn_command_args_options
@@ -654,36 +716,51 @@ export class ToolRunner extends events.EventEmitter {
             fileStream = this.pipeOutputToFile ? fs.createWriteStream(this.pipeOutputToFile) : null;
             if (fileStream) {
                 fileStream.on('finish', () => {
-                    pending.file--;
+                    state.fileClosed = true;
+                    this._debug(`Finished writing file '${this.pipeOutputToFile}'.`);
                     fileStream = null;
-                    pending.CheckComplete(defer, returnCode, error);
+                    state.CheckComplete();
                 });
+
                 fileStream.on('error', (err) => {
-                    pending.file--; // there were errors writing to the file, write is done
-                    this._debug(`Failed to pipe output of ${toolPathFirst} to file ${this.pipeOutputToFile}. Error = ${err}`);
+                    state.fileClosed = true;
+                    this._debug(`Failed to pipe output of '${this.toolPath}' to file '${this.pipeOutputToFile}'. Error: ${err}`);
                     fileStream = null;
-                    pending.CheckComplete(defer, returnCode, error);
+                    state.CheckComplete();
                 })
             }
 
             // pipe stdout of first tool to stdin of second tool
+            let fileStreamError: boolean;
+            let stdinError: boolean;
             cpFirst.stdout.on('data', (data: Buffer) => {
-                try {
-                    if (fileStream) {
+                if (fileStream && !fileStreamError) {
+                    try {
                         fileStream.write(data);
                     }
-                    cp.stdin.write(data);
-                } catch (err) {
-                    this._debug('Failed to pipe output of ' + toolPathFirst + ' to ' + toolPath);
-                    this._debug(toolPath + ' might have exited due to errors prematurely. Verify the arguments passed are valid.');
+                    catch (err) {
+                        fileStreamError = true;
+                        this._debug(`Failed to pipe the output of '${this.toolPath}' to the file '${this.pipeOutputToFile}'. Error: ${err}`);
+                    }
+                }
+
+                if (!stdinError) {
+                    try {
+                        cp.stdin.write(data);
+                    }
+                    catch (err) {
+                        this._debug(`Failed to pipe the output of '${this.toolPath}' to '${this.pipeOutputToTool.toolPath}'. The tool '${this.pipeOutputToTool.toolPath}' might have exited due to errors. Verify the arguments passed are valid. Error: ${err}`);
+                    }
                 }
             });
 
             cpFirst.stderr.on('data', (data: Buffer) => {
+                state.processStderr = true;
+
                 if (fileStream) {
                     fileStream.write(data);
                 }
-                successFirst = !options.failOnStdErr;
+
                 if (!options.silent) {
                     var s = options.failOnStdErr ? options.errStream : options.outStream;
                     s.write(data);
@@ -691,37 +768,35 @@ export class ToolRunner extends events.EventEmitter {
             });
 
             cpFirst.on('error', (err) => {
-                pending.processClose--; // first process is complete with errors
-                pending.processExit--;
+                state.processClosed = true;
+                state.processExited = true;
+
                 if (fileStream) {
                     fileStream.end();
                 }
+
                 cp.stdin.end();
-                error = new Error(toolPathFirst + ' failed. ' + err.message);
-                pending.CheckComplete(defer, null, error);
+                state.processError = err.message;
+                state.CheckComplete();
             });
 
             cpFirst.on('exit', (code, signal) => {
-                pending.processExit--; // first process exited
-                // todo: ?
-                pending.CheckComplete(defer, null, error)
+                state.processExitCode = code;
+                state.processExited = true;
+                this._debug(`Exit code ${code} received from tool '${this.toolPath}'.`);
+                state.CheckComplete()
             });
 
             cpFirst.on('close', (code, signal) => {
-                pending.processClose--; // first process is complete
-                if (code != 0 && !options.ignoreReturnCode) {
-                    successFirst = false;
-                    returnCodeFirst = code;
-                    if (!returnCode) {
-                        returnCode = returnCodeFirst;
-                    }
-                }
-                this._debug('success of first tool:' + successFirst);
+                state.processExitCode = code;
+                state.processClosed = true;
+
                 if (fileStream) {
                     fileStream.end();
                 }
+
                 cp.stdin.end();
-                pending.CheckComplete(defer, returnCode, error);
+                state.CheckComplete();
             });
         } else {
             cp = child.spawn(this._getSpawnFileName(), this._getSpawnArgs(options), this._getSpawnOptions(options));
@@ -744,7 +819,13 @@ export class ToolRunner extends events.EventEmitter {
         cp.stderr.on('data', (data: Buffer) => {
             this.emit('stderr', data);
 
-            success = !options.failOnStdErr;
+            if (this.pipeOutputToFile) {
+                state.process2Stderr = true;
+            }
+            else {
+                state.processStderr = true;
+            }
+
             if (!options.silent) {
                 var s = options.failOnStdErr ? options.errStream : options.outStream;
                 s.write(data);
@@ -756,17 +837,46 @@ export class ToolRunner extends events.EventEmitter {
         });
 
         cp.on('error', (err) => {
-            waitingEvents--; // process is done with errors
-            error = new Error(toolPath + ' failed. ' + err.message);
-            if(waitingEvents == 0) {
-                defer.reject(error);
+            if (this.pipeOutputToFile) {
+                state.process2Error = err.message;
+                state.process2Closed = true;
+                state.process2Exited = true;
             }
+            else {
+                state.processError = err.message;
+                state.processClosed = true;
+                state.processExited = true;
+            }
+
+            state.CheckComplete();
+        });
+
+        cp.on('exit', (code, signal) => {
+            if (this.pipeOutputToTool) {
+                state.process2ExitCode = code;
+                state.process2Exited = true;
+                this._debug(`Exit code ${code} received from tool '${this.pipeOutputToTool.toolPath}'.`);
+            }
+            else {
+                state.processExitCode = code;
+                state.processExited = true;
+                this._debug(`Exit code ${code} received from tool '${this.toolPath}'.`);
+            }
+
+            state.CheckComplete()
         });
 
         cp.on('close', (code, signal) => {
-            waitingEvents--; // process is complete
-            this._debug('rc:' + code);
-            returnCode = code;
+            if (this.pipeOutputToTool) {
+                state.process2ExitCode = code;
+                state.process2Closed = true;
+                this._debug(`Stdio streams have closed for tool '${this.pipeOutputToTool.toolPath}'`)
+            }
+            else {
+                state.processExitCode = code;
+                state.processClosed = true;
+                this._debug(`Stdio streams have closed for tool '${this.toolPath}'`)
+            }
 
             if (stdbuffer.length > 0) {
                 this.emit('stdline', stdbuffer);
@@ -776,25 +886,7 @@ export class ToolRunner extends events.EventEmitter {
                 this.emit('errline', errbuffer);
             }
 
-            if (code != 0 && !options.ignoreReturnCode) {
-                success = false;
-            }
-
-            this._debug('success:' + success);
-                
-            if (!successFirst) { // in the case output is piped to another tool, check exit code of both tools
-                error = new Error(toolPathFirst + ' failed with return code: ' + returnCodeFirst);
-            } else if (!success) {
-                error = new Error(toolPath + ' failed with return code: ' + code);
-            }
-
-            if(waitingEvents == 0) {
-                if (error) {
-                    defer.reject(error);
-                } else {
-                    defer.resolve(returnCode);
-                }
-            }
+            state.CheckComplete();
         });
 
         return <Q.Promise<number>>defer.promise;
