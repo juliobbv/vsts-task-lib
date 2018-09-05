@@ -638,6 +638,7 @@ export class ToolRunner extends events.EventEmitter {
                         cp2.stdin.write(data);
                     }
                     catch (err) {
+                        stdinError = true;
                         this._debug(`Failed to pipe the output of '${this.toolPath}' to '${this.pipeOutputToTool.toolPath}'. The tool '${this.pipeOutputToTool.toolPath}' might have exited due to errors. Verify the arguments passed are valid. Error: ${err}`);
                     }
                 }
@@ -646,8 +647,14 @@ export class ToolRunner extends events.EventEmitter {
             cp1.stderr.on('data', (data: Buffer) => {
                 state.processStderr = true;
 
-                if (fileStream) {
-                    fileStream.write(data);
+                if (fileStream && !fileStreamError) {
+                    try {
+                        fileStream.write(data);
+                    }
+                    catch (err) {
+                        fileStreamError = true;
+                        this._debug(`Failed to pipe the output of '${this.toolPath}' to the file '${this.pipeOutputToFile}'. Error: ${err}`);
+                    }
                 }
 
                 if (!options.silent) {
@@ -678,6 +685,7 @@ export class ToolRunner extends events.EventEmitter {
 
             cp1.on('close', (code, signal) => {
                 state.processExitCode = code;
+                state.processExited = true;
                 state.processClosed = true;
 
                 if (fileStream) {
@@ -732,6 +740,7 @@ export class ToolRunner extends events.EventEmitter {
 
             cp2.on('close', (code, signal) => {
                 state.process2ExitCode = code;
+                state.process2Exited = true;
                 state.process2Closed = true;
                 this._debug(`STDIO streams have closed for tool '${this.pipeOutputToTool.toolPath}'`)
 
@@ -794,6 +803,7 @@ export class ToolRunner extends events.EventEmitter {
 
             cp.on('close', (code, signal) => {
                 state.processExitCode = code;
+                state.processExited = true;
                 state.processClosed = true;
                 this._debug(`STDIO streams have closed for tool '${this.toolPath}'`)
 
@@ -895,7 +905,6 @@ class ExecState {
     private debug: (any);
     private defer: Q.Deferred<number>;
     private done: boolean;
-    private error: Error;
     private filePath: string;
     private options: IExecOptions;
     private toolPath: string;
