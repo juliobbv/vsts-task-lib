@@ -657,15 +657,15 @@ export class ToolRunner extends events.EventEmitter {
             });
 
             cp1.on('error', (err) => {
-                state.processClosed = true;
+                state.processError = err.message;
                 state.processExited = true;
+                state.processClosed = true;
 
                 if (fileStream) {
                     fileStream.end();
                 }
 
                 cp2.stdin.end();
-                state.processError = err.message;
                 state.CheckComplete();
             });
 
@@ -718,8 +718,8 @@ export class ToolRunner extends events.EventEmitter {
 
             cp2.on('error', (err) => {
                 state.process2Error = err.message;
-                state.process2Closed = true;
                 state.process2Exited = true;
+                state.process2Closed = true;
                 state.CheckComplete();
             });
 
@@ -780,8 +780,8 @@ export class ToolRunner extends events.EventEmitter {
 
             cp.on('error', (err) => {
                 state.processError = err.message;
-                state.processClosed = true;
                 state.processExited = true;
+                state.processClosed = true;
                 state.CheckComplete();
             });
 
@@ -876,14 +876,8 @@ class ExecState {
         this.defer = defer;
         this.options = options;
         this.toolPath = toolPath;
-
-        if (toolPath2) {
-            this.toolPath2 = toolPath2;
-
-            if (this.filePath) {
-                this.filePath = filePath;
-            }
-        }
+        this.toolPath2 = toolPath2;
+        this.filePath = filePath;
     }
 
     fileClosed: boolean; // tracks whether the file has closed
@@ -921,14 +915,14 @@ class ExecState {
                 this._setResult();
             }
             else if (this.processExited && this.process2Exited) {
-                setTimeout(this._timeout, this.delay * 1000);
+                setTimeout(ExecState.HandleTimeout, this.delay * 1000, this);
             }
         }
         else if (this.processClosed) {
             this._setResult();
         }
         else if (this.processExited) {
-            setTimeout(this._timeout, this.delay * 1000);
+            setTimeout(ExecState.HandleTimeout, this.delay * 1000, this);
         }
     }
 
@@ -971,19 +965,19 @@ class ExecState {
         this.done = true;
     }
 
-    private _timeout(): void {
-        if (this.done) {
+    private static HandleTimeout(state: ExecState) {
+        if (state.done) {
             return;
         }
 
-        if (!this.process2Closed && this.process2Exited) {
-            this.debug(`The STDIO streams did not close within ${this.delay} seconds of the exit event from process '${this.toolPath2}'. This may indicate child processes the inherited the STDIO streams and the child processes have not yet exited.`);
+        if (!state.process2Closed && state.process2Exited) {
+            state.debug(`The STDIO streams did not close within ${state.delay} seconds of the exit event from process '${state.toolPath2}'. This may indicate child processes the inherited the STDIO streams and the child processes have not yet exited.`);
         }
 
-        if (!this.processClosed && this.processExited) {
-            this.debug(`The STDIO streams did not close within ${this.delay} seconds of the exit event from process '${this.toolPath}'. This may indicate child processes the inherited the STDIO streams and the child processes have not yet exited.`);
+        if (!state.processClosed && state.processExited) {
+            state.debug(`The STDIO streams did not close within ${state.delay} seconds of the exit event from process '${state.toolPath}'. This may indicate child processes the inherited the STDIO streams and the child processes have not yet exited.`);
         }
 
-        this._setResult();
+        state._setResult();
     }
 }
