@@ -888,6 +888,10 @@ class ExecState {
         this.toolPath = toolPath;
         this.toolPath2 = toolPath2;
         this.filePath = filePath;
+        let delay = process.env['TASKLIB_TEST_TOOLRUNNER_EXITDELAY'];
+        if (delay) {
+            this.delay = parseInt(delay);
+        }
     }
 
     fileClosed: boolean; // tracks whether the file has closed

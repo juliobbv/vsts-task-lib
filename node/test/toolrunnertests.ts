@@ -217,8 +217,9 @@ describe('Toolrunner Tests', function () {
 
         var output = '';
         if (os.platform() === 'win32') {
-            var cmd = tl.tool(tl.which('cmd', true));
-            cmd.arg('/c echo \'vsts-task-lib\'');
+            var cmd = tl.tool(tl.which('cmd', true))
+                .arg('/c')
+                .arg('echo \'vsts-task-lib\'');
 
             cmd.on('stdout', (data) => {
                 output = data.toString();
@@ -394,6 +395,87 @@ describe('Toolrunner Tests', function () {
             .fail(function (err) {
                 done(err);
             });
+    })
+    it('Fails when process fails to launch', function (done) {
+        this.timeout(10000);
+
+        var tool = tl.tool(tl.which('node', true));
+        var _testExecOptions = <trm.IExecOptions>{
+            cwd: path.join(testutil.getTestTemp(), 'nosuchdir'),
+            env: {},
+            silent: false,
+            failOnStdErr: true,
+            ignoreReturnCode: false,
+            outStream: testutil.getNullStream(),
+            errStream: testutil.getNullStream()
+        }
+
+        var output = '';
+        tool.on('stderr', (data) => {
+            output = data.toString();
+        });
+
+        var succeeded = false;
+        tool.exec(_testExecOptions)
+            .then(function () {
+                succeeded = true;
+                assert.fail('should not have succeeded');
+            })
+            .fail(function (err) {
+                if (succeeded) {
+                    done(err);
+                }
+                else {
+                    assert(err.message.indexOf('This may indicate the process failed to start') >= 0, `expected error message to indicate "This may indicate the process failed to start". actual error message: "${err}"`);
+                    assert(output && output.length > 0, 'should have emitted stderr');
+                    done();
+                }
+            })
+            .fail(function (err) {
+                done(err);
+            });
+    })
+    it('Handles child process holding streams open', function (done) {
+        this.timeout(10000);
+
+        assert.fail('here');
+        // var tool = tl.tool(tl.which('node', true))
+        //     .arg('-e')
+        //     .arg(`var fs = require('fs'); setTimeout(() => { try {`)
+        // var _testExecOptions = <trm.IExecOptions>{
+        //     cwd: __dirname,
+        //     env: {},
+        //     silent: false,
+        //     failOnStdErr: true,
+        //     ignoreReturnCode: false,
+        //     outStream: testutil.getNullStream(),
+        //     errStream: testutil.getNullStream()
+        // }
+
+        // var output = '';
+        // tool.on('stderr', (data) => {
+        //     output = data.toString();
+        // });
+
+        // var succeeded = false;
+        // tool.exec(_testExecOptions)
+        //     .then(function () {
+        //         succeeded = true;
+        //         assert.fail('should not have succeeded');
+        //     })
+        //     .fail(function (err) {
+        //         if (succeeded) {
+        //             done(err);
+        //         }
+        //         else {
+        //             assert(err.message.indexOf('This may indicate the process failed to start') >= 0, `expected error message to indicate "This may indicate the process failed to start". actual error message: "${err}"`);
+        //             assert(output && output.length > 0, 'should have emitted stderr');
+        //             done();
+        //         }
+        //     })
+        //     .fail(function (err) {
+        //         done(err);
+        //     });
     })
     it('Exec pipe output to another tool, succeeds if both tools succeed', function (done) {
         this.timeout(30000);
