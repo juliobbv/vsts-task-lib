@@ -287,7 +287,7 @@ describe('Toolrunner Tests', function () {
                         done(err);
                     }
                     else {
-                        assert(err.message.indexOf('return code: 1') >= 0, `expected error message to indicate "return code: 1". actual error message: "${err}"`);
+                        assert(err.message.indexOf('failed with exit code 1') >= 0, `expected error message to indicate "failed with exit code 1". actual error message: "${err}"`);
                         assert(output && output.length > 0, 'should have emitted stderr');
                         done();
                     }
@@ -318,7 +318,7 @@ describe('Toolrunner Tests', function () {
                         done(err);
                     }
                     else {
-                        assert(err.message.indexOf('return code: 123') >= 0, `expected error message to indicate "return code: 123". actual error message: "${err}"`);
+                        assert(err.message.indexOf('failed with exit code 123') >= 0, `expected error message to indicate "failed with exit code 123". actual error message: "${err}"`);
                         assert(output && output.length > 0, 'should have emitted stderr');
                         done();
                     }
@@ -386,7 +386,7 @@ describe('Toolrunner Tests', function () {
                     done(err);
                 }
                 else {
-                    assert(err.message.indexOf('return code: 0') >= 0, `expected error message to indicate "return code: 0". actual error message: "${err}"`);
+                    assert(err.message.indexOf('one or more lines were written to the STDERR stream') >= 0, `expected error message to indicate "one or more lines were written to the STDERR stream". actual error message: "${err}"`);
                     assert(output && output.length > 0, 'should have emitted stderr');
                     done();
                 }

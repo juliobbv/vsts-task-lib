@@ -574,8 +574,8 @@ export class ToolRunner extends events.EventEmitter {
     public exec(options?: IExecOptions): Q.Promise<number> {
         var defer = Q.defer<number>();
 
-        this._debug('Exec tool: ' + this.toolPath);
-        this._debug('Arguments:');
+        this._debug('exec tool: ' + this.toolPath);
+        this._debug('arguments:');
         this.args.forEach((arg) => {
             this._debug('   ' + arg);
         });
@@ -606,7 +606,7 @@ export class ToolRunner extends events.EventEmitter {
             if (fileStream) {
                 fileStream.on('finish', () => {
                     state.fileClosed = true;
-                    this._debug(`Finished writing file '${this.pipeOutputToFile}'.`);
+                    this._debug(`Finished writing file '${this.pipeOutputToFile}'`);
                     fileStream = null;
                     state.CheckComplete();
                 });
@@ -672,7 +672,7 @@ export class ToolRunner extends events.EventEmitter {
             cp1.on('exit', (code, signal) => {
                 state.processExitCode = code;
                 state.processExited = true;
-                this._debug(`Exit code ${code} received from tool '${this.toolPath}'.`);
+                this._debug(`Exit code ${code} received from tool '${this.toolPath}'`);
                 state.CheckComplete()
             });
 
@@ -726,14 +726,14 @@ export class ToolRunner extends events.EventEmitter {
             cp2.on('exit', (code, signal) => {
                 state.process2ExitCode = code;
                 state.process2Exited = true;
-                this._debug(`Exit code ${code} received from tool '${this.pipeOutputToTool.toolPath}'.`);
+                this._debug(`Exit code ${code} received from tool '${this.pipeOutputToTool.toolPath}'`);
                 state.CheckComplete()
             });
 
             cp2.on('close', (code, signal) => {
                 state.process2ExitCode = code;
                 state.process2Closed = true;
-                this._debug(`Stdio streams have closed for tool '${this.pipeOutputToTool.toolPath}'`)
+                this._debug(`STDIO streams have closed for tool '${this.pipeOutputToTool.toolPath}'`)
 
                 if (stdbuffer.length > 0) {
                     this.emit('stdline', stdbuffer);
@@ -788,14 +788,14 @@ export class ToolRunner extends events.EventEmitter {
             cp.on('exit', (code, signal) => {
                 state.processExitCode = code;
                 state.processExited = true;
-                this._debug(`Exit code ${code} received from tool '${this.toolPath}'.`);
+                this._debug(`Exit code ${code} received from tool '${this.toolPath}'`);
                 state.CheckComplete()
             });
 
             cp.on('close', (code, signal) => {
                 state.processExitCode = code;
                 state.processClosed = true;
-                this._debug(`Stdio streams have closed for tool '${this.toolPath}'`)
+                this._debug(`STDIO streams have closed for tool '${this.toolPath}'`)
 
                 if (stdbuffer.length > 0) {
                     this.emit('stdline', stdbuffer);
@@ -900,6 +900,7 @@ class ExecState {
     private options: IExecOptions;
     private toolPath: string;
     private toolPath2: string;
+    private timeouts = [];
 
     public CheckComplete(): void {
         if (this.done) {
@@ -915,43 +916,47 @@ class ExecState {
                 this._setResult();
             }
             else if (this.processExited && this.process2Exited) {
-                setTimeout(ExecState.HandleTimeout, this.delay * 1000, this);
+                this.timeouts.push(setTimeout(ExecState.HandleTimeout, this.delay * 1000, this));
             }
         }
-        else if (this.processClosed) {
-            this._setResult();
-        }
-        else if (this.processExited) {
-            setTimeout(ExecState.HandleTimeout, this.delay * 1000, this);
+        else {
+            if (this.processClosed) {
+                this._setResult();
+            }
+            else if (this.processExited) {
+                this.timeouts.push(setTimeout(ExecState.HandleTimeout, this.delay * 1000, this));
+            }
         }
     }
 
     private _setResult(): void {
+        // determine whether there is an error
         let error: Error;
         if (this.processExited) {
             if (this.processError) {
-                error = new Error(`The process '${this.toolPath}' failed. ${this.processError}`);
+                error = new Error(im._loc('LIB_ProcessError', this.toolPath, this.processError));
             }
             else if (this.processExitCode != 0 && !this.options.ignoreReturnCode) {
-                error = new Error(`The process '${this.toolPath}' failed with exit code ${this.processExitCode}.`);
+                error = new Error(im._loc('LIB_ProcessExitCode', this.toolPath, this.processExitCode));
             }
             else if (this.processStderr && this.options.failOnStdErr) {
-                error = new Error(`The process '${this.toolPath}' failed because one or more lines were written to the STDERR stream.`);
+                error = new Error(im._loc('LIB_ProcessStderr', this.toolPath));
             }
         }
 
         if (!error && this.toolPath2) {
             if (this.process2Error) {
-                error = new Error(`The process '${this.toolPath2}' failed. ${this.process2Error}`);
+                error = new Error(im._loc('LIB_ProcessError', this.toolPath2, this.process2Error));
             }
             else if (this.process2ExitCode != 0 && !this.options.ignoreReturnCode) {
-                error = new Error(`The process '${this.toolPath2}' failed with exit code ${this.process2ExitCode}.`);
+                error = new Error(im._loc('LIB_ProcessExitCode', this.toolPath2, this.process2ExitCode));
             }
             else if (this.process2Stderr && this.options.failOnStdErr) {
-                error = new Error(`The process '${this.toolPath2}' failed because one or more lines were written to the STDERR stream.`);
+                error = new Error(im._loc('LIB_ProcessStderr', this.toolPath2));
             }
         }
 
+        // satisfy the promise
         if (error) {
             this.defer.reject(error);
         }
@@ -960,6 +965,11 @@ class ExecState {
         }
         else {
             this.defer.resolve(this.processExitCode);
+        }
+
+        // clear the timeouts
+        while (this.timeouts.length > 0) {
+            clearTimeout(this.timeouts.pop());
         }
 
         this.done = true;
