@@ -99,6 +99,7 @@ class ExecState {
     process2Exited: boolean;
     process2Stderr: boolean;
     private readonly delay: number = 10; // seconds
+    private debug: (any);
     private defer: Q.Deferred<number>;
     private done: boolean;
     private error: Error;
@@ -108,54 +109,83 @@ class ExecState {
     private toolPath2: string;
 
     public CheckComplete(): void {
+        if (this.done) {
+            return;
+        }
+
+        if (this.filePath && !this.fileClosed) {
+            return;
+        }
 
         if (this.toolPath2) {
-            if (this.processClosed && this.process2Closed && this.fileClosed) {
+            if (this.processClosed && this.process2Closed) {
+                this._setResult();
             }
-            else if (this.processExited && this.process2Exited && this.fileClosed) {
+            else if (this.processExited && this.process2Exited) {
+                setTimeout(this._timeout, this.delay * 1000);
             }
         }
         else if (this.processClosed) {
-            if (this.processError) {
-                let error = new Error(`Tool '${this.toolPath}' failed. ${this.processError}`);
-                this.defer.reject(this.error);
-            }
-            else if (this.processExitCode != 0 && !this.options.ignoreReturnCode) {
-                // if (code != 0 && !options.ignoreReturnCode) {
-                //     success = false;
-                // }
-
-                // this._debug('success:' + success);
-                    
-                // if (!successFirst) { // in the case output is piped to another tool, check exit code of both tools
-                //     error = new Error(toolPathFirst + ' failed with return code: ' + returnCodeFirst);
-                // }
-                // else if (!success) {
-                //     error = new Error(toolPath + ' failed with return code: ' + code);
-                // }
-            }
+            this._setResult();
         }
-        //successFirst = !options.failOnStdErr;
-        //error = new Error(toolPathFirst + ' failed. ' + err.message);
-        if (this.processClose == 0 && this.file == 0) {
-            if (this.error) {
-                this.defer.reject(this.error);
-            } else {
-                this.defer.resolve(this.returnCode);
-            }
-
-            this.done = true;
-        }
-        else if (this.processExit == 0 && this.file == 0) {
+        else if (this.processExited) {
             setTimeout(this._timeout, this.delay * 1000);
         }
     }
 
-    private _timeout() {
-        if (!this.done) {
-            console.log(`The process exited but stdio streams have not closed after ${this.delay} seconds`)
-            this.done = true;
+    private _setResult(): void {
+        let error: Error;
+        if (this.processExited) {
+            if (this.processError) {
+                error = new Error(`The process '${this.toolPath}' failed. ${this.processError}`);
+            }
+            else if (this.processExitCode != 0 && !this.options.ignoreReturnCode) {
+                error = new Error(`The process '${this.toolPath}' failed with exit code ${this.processExitCode}.`);
+            }
+            else if (this.processStderr && this.options.failOnStdErr) {
+                error = new Error(`The process '${this.toolPath}' failed because one or more lines were written to the STDERR stream.`);
+            }
         }
+
+        if (!error && this.toolPath2) {
+            if (this.process2Error) {
+                error = new Error(`The process '${this.toolPath2}' failed. ${this.process2Error}`);
+            }
+            else if (this.process2ExitCode != 0 && !this.options.ignoreReturnCode) {
+                error = new Error(`The process '${this.toolPath2}' failed with exit code ${this.process2ExitCode}.`);
+            }
+            else if (this.process2Stderr && this.options.failOnStdErr) {
+                error = new Error(`The process '${this.toolPath2}' failed because one or more lines were written to the STDERR stream.`);
+            }
+        }
+
+        if (error) {
+            this.defer.reject(error);
+        }
+        else if (this.toolPath2) {
+            this.defer.resolve(this.process2ExitCode);
+        }
+        else {
+            this.defer.resolve(this.processExitCode);
+        }
+
+        this.done = true;
+    }
+
+    private _timeout() {
+        if (this.done) {
+            return;
+        }
+
+        if (!this.process2Closed && this.process2Exited) {
+            this.debug(`The STDIO streams did not close within ${this.delay} seconds of the exit event from process '${this.toolPath2}'. This may indicate child processes the inherited the STDIO streams and the child processes have not yet exited.`);
+        }
+
+        if (!this.processClosed && this.processExited) {
+            this.debug(`The STDIO streams did not close within ${this.delay} seconds of the exit event from process '${this.toolPath}'. This may indicate child processes the inherited the STDIO streams and the child processes have not yet exited.`);
+        }
+
+        this._setResult();
     }
 }
 
