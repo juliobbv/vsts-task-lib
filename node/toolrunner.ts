@@ -98,7 +98,7 @@ class ExecState {
     process2ExitCode: number;
     process2Exited: boolean;
     process2Stderr: boolean;
-    private readonly delay: number = 10; // seconds
+    private delay = 10; // seconds
     private debug: (any);
     private defer: Q.Deferred<number>;
     private done: boolean;
@@ -172,7 +172,7 @@ class ExecState {
         this.done = true;
     }
 
-    private _timeout() {
+    private _timeout(): void {
         if (this.done) {
             return;
         }
