@@ -58,137 +58,6 @@ export interface IExecSyncResult {
     error: Error;
 }
 
-class ExecState {
-    constructor(
-        defer: Q.Deferred<number>,
-        options: IExecOptions,
-        toolPath: string,
-        toolPath2: string,
-        filePath: string) {
-
-        if (!toolPath) {
-            throw new Error('toolPath must not be empty');
-        }
-
-        if (!toolPath2 && filePath) {
-            throw new Error('filePath must not be supplied when toolPath2 is empty');
-        }
-
-        this.defer = defer;
-        this.options = options;
-        this.toolPath = toolPath;
-
-        if (toolPath2) {
-            this.toolPath2 = toolPath2;
-
-            if (this.filePath) {
-                this.filePath = filePath;
-            }
-        }
-    }
-
-    fileClosed: boolean; // tracks whether the file has closed
-    processClosed: boolean; // tracks whether the process has exited and stdio is closed
-    processError: string;
-    processExitCode: number;
-    processExited: boolean; // tracks whether the process has exited
-    processStderr: boolean; // tracks whether stderr was written to
-    process2Closed: boolean;
-    process2Error: string;
-    process2ExitCode: number;
-    process2Exited: boolean;
-    process2Stderr: boolean;
-    private delay = 10; // seconds
-    private debug: (any);
-    private defer: Q.Deferred<number>;
-    private done: boolean;
-    private error: Error;
-    private filePath: string;
-    private options: IExecOptions;
-    private toolPath: string;
-    private toolPath2: string;
-
-    public CheckComplete(): void {
-        if (this.done) {
-            return;
-        }
-
-        if (this.filePath && !this.fileClosed) {
-            return;
-        }
-
-        if (this.toolPath2) {
-            if (this.processClosed && this.process2Closed) {
-                this._setResult();
-            }
-            else if (this.processExited && this.process2Exited) {
-                setTimeout(this._timeout, this.delay * 1000);
-            }
-        }
-        else if (this.processClosed) {
-            this._setResult();
-        }
-        else if (this.processExited) {
-            setTimeout(this._timeout, this.delay * 1000);
-        }
-    }
-
-    private _setResult(): void {
-        let error: Error;
-        if (this.processExited) {
-            if (this.processError) {
-                error = new Error(`The process '${this.toolPath}' failed. ${this.processError}`);
-            }
-            else if (this.processExitCode != 0 && !this.options.ignoreReturnCode) {
-                error = new Error(`The process '${this.toolPath}' failed with exit code ${this.processExitCode}.`);
-            }
-            else if (this.processStderr && this.options.failOnStdErr) {
-                error = new Error(`The process '${this.toolPath}' failed because one or more lines were written to the STDERR stream.`);
-            }
-        }
-
-        if (!error && this.toolPath2) {
-            if (this.process2Error) {
-                error = new Error(`The process '${this.toolPath2}' failed. ${this.process2Error}`);
-            }
-            else if (this.process2ExitCode != 0 && !this.options.ignoreReturnCode) {
-                error = new Error(`The process '${this.toolPath2}' failed with exit code ${this.process2ExitCode}.`);
-            }
-            else if (this.process2Stderr && this.options.failOnStdErr) {
-                error = new Error(`The process '${this.toolPath2}' failed because one or more lines were written to the STDERR stream.`);
-            }
-        }
-
-        if (error) {
-            this.defer.reject(error);
-        }
-        else if (this.toolPath2) {
-            this.defer.resolve(this.process2ExitCode);
-        }
-        else {
-            this.defer.resolve(this.processExitCode);
-        }
-
-        this.done = true;
-    }
-
-    private _timeout(): void {
-        if (this.done) {
-            return;
-        }
-
-        if (!this.process2Closed && this.process2Exited) {
-            this.debug(`The STDIO streams did not close within ${this.delay} seconds of the exit event from process '${this.toolPath2}'. This may indicate child processes the inherited the STDIO streams and the child processes have not yet exited.`);
-        }
-
-        if (!this.processClosed && this.processExited) {
-            this.debug(`The STDIO streams did not close within ${this.delay} seconds of the exit event from process '${this.toolPath}'. This may indicate child processes the inherited the STDIO streams and the child processes have not yet exited.`);
-        }
-
-        this._setResult();
-    }
-}
-
 export class ToolRunner extends events.EventEmitter {
     constructor(toolPath) {
         super();
@@ -716,17 +585,11 @@ export class ToolRunner extends events.EventEmitter {
             options.outStream.write(this._getCommandString(options) + os.EOL);
         }
 
-        let fileStream: fs.WriteStream;
-        let state = new ExecState(
-            defer,
-            options,
-            this.toolPath,
-            this.pipeOutputToTool ? this.pipeOutputToTool.toolPath : null, // toolPath2
-            this.pipeOutputToFile);
-
         if (this.pipeOutputToTool) {
             // Following node documentation example from this link on how to pipe output of one process to another
             // https://nodejs.org/api/child_process.html#child_process_child_process_spawn_command_args_options
+
+            let state = new ExecState(this._debug, defer, options, this.toolPath, this.pipeOutputToTool.toolPath, this.pipeOutputToFile);
 
             // start the child process for both tools
             let cp1 = child.spawn(
@@ -739,7 +602,7 @@ export class ToolRunner extends events.EventEmitter {
                 this.pipeOutputToTool._getSpawnArgs(options),
                 this.pipeOutputToTool._getSpawnOptions(options));
 
-            fileStream = this.pipeOutputToFile ? fs.createWriteStream(this.pipeOutputToFile) : null;
+            let fileStream = this.pipeOutputToFile ? fs.createWriteStream(this.pipeOutputToFile) : null;
             if (fileStream) {
                 fileStream.on('finish', () => {
                     state.fileClosed = true;
@@ -883,6 +746,8 @@ export class ToolRunner extends events.EventEmitter {
                 state.CheckComplete();
             });
         } else {
+            let state = new ExecState(this._debug, defer, options, this.toolPath);
+
             let cp = child.spawn(this._getSpawnFileName(), this._getSpawnArgs(options), this._getSpawnOptions(options));
 
             var stdbuffer: string = '';
@@ -987,5 +852,138 @@ export class ToolRunner extends events.EventEmitter {
         res.stdout = (r.stdout) ? r.stdout.toString() : null;
         res.stderr = (r.stderr) ? r.stderr.toString() : null;
         return res;
+    }
+}
+
+class ExecState {
+    constructor(
+        debug: (any),
+        defer: Q.Deferred<number>,
+        options: IExecOptions,
+        toolPath: string,
+        toolPath2?: string,
+        filePath?: string) {
+
+        if (!toolPath) {
+            throw new Error('toolPath must not be empty');
+        }
+
+        if (!toolPath2 && filePath) {
+            throw new Error('filePath must not be supplied when toolPath2 is empty');
+        }
+
+        this.debug = debug;
+        this.defer = defer;
+        this.options = options;
+        this.toolPath = toolPath;
+
+        if (toolPath2) {
+            this.toolPath2 = toolPath2;
+
+            if (this.filePath) {
+                this.filePath = filePath;
+            }
+        }
+    }
+
+    fileClosed: boolean; // tracks whether the file has closed
+    processClosed: boolean; // tracks whether the process has exited and stdio is closed
+    processError: string;
+    processExitCode: number;
+    processExited: boolean; // tracks whether the process has exited
+    processStderr: boolean; // tracks whether stderr was written to
+    process2Closed: boolean;
+    process2Error: string;
+    process2ExitCode: number;
+    process2Exited: boolean;
+    process2Stderr: boolean;
+    private delay = 10; // seconds
+    private debug: (any);
+    private defer: Q.Deferred<number>;
+    private done: boolean;
+    private error: Error;
+    private filePath: string;
+    private options: IExecOptions;
+    private toolPath: string;
+    private toolPath2: string;
+
+    public CheckComplete(): void {
+        if (this.done) {
+            return;
+        }
+
+        if (this.filePath && !this.fileClosed) {
+            return;
+        }
+
+        if (this.toolPath2) {
+            if (this.processClosed && this.process2Closed) {
+                this._setResult();
+            }
+            else if (this.processExited && this.process2Exited) {
+                setTimeout(this._timeout, this.delay * 1000);
+            }
+        }
+        else if (this.processClosed) {
+            this._setResult();
+        }
+        else if (this.processExited) {
+            setTimeout(this._timeout, this.delay * 1000);
+        }
+    }
+
+    private _setResult(): void {
+        let error: Error;
+        if (this.processExited) {
+            if (this.processError) {
+                error = new Error(`The process '${this.toolPath}' failed. ${this.processError}`);
+            }
+            else if (this.processExitCode != 0 && !this.options.ignoreReturnCode) {
+                error = new Error(`The process '${this.toolPath}' failed with exit code ${this.processExitCode}.`);
+            }
+            else if (this.processStderr && this.options.failOnStdErr) {
+                error = new Error(`The process '${this.toolPath}' failed because one or more lines were written to the STDERR stream.`);
+            }
+        }
+
+        if (!error && this.toolPath2) {
+            if (this.process2Error) {
+                error = new Error(`The process '${this.toolPath2}' failed. ${this.process2Error}`);
+            }
+            else if (this.process2ExitCode != 0 && !this.options.ignoreReturnCode) {
+                error = new Error(`The process '${this.toolPath2}' failed with exit code ${this.process2ExitCode}.`);
+            }
+            else if (this.process2Stderr && this.options.failOnStdErr) {
+                error = new Error(`The process '${this.toolPath2}' failed because one or more lines were written to the STDERR stream.`);
+            }
+        }
+
+        if (error) {
+            this.defer.reject(error);
+        }
+        else if (this.toolPath2) {
+            this.defer.resolve(this.process2ExitCode);
+        }
+        else {
+            this.defer.resolve(this.processExitCode);
+        }
+
+        this.done = true;
+    }
+
+    private _timeout(): void {
+        if (this.done) {
+            return;
+        }
+
+        if (!this.process2Closed && this.process2Exited) {
+            this.debug(`The STDIO streams did not close within ${this.delay} seconds of the exit event from process '${this.toolPath2}'. This may indicate child processes the inherited the STDIO streams and the child processes have not yet exited.`);
+        }
+
+        if (!this.processClosed && this.processExited) {
+            this.debug(`The STDIO streams did not close within ${this.delay} seconds of the exit event from process '${this.toolPath}'. This may indicate child processes the inherited the STDIO streams and the child processes have not yet exited.`);
+        }
+
+        this._setResult();
     }
 }
