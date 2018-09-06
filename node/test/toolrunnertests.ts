@@ -427,7 +427,6 @@ describe('Toolrunner Tests', function () {
                 }
                 else {
                     assert(err.message.indexOf('This may indicate the process failed to start') >= 0, `expected error message to indicate "This may indicate the process failed to start". actual error message: "${err}"`);
-                    assert(output && output.length > 0, 'should have emitted stderr');
                     done();
                 }
             })
@@ -436,9 +435,45 @@ describe('Toolrunner Tests', function () {
             });
     })
     it('Handles child process holding streams open', function (done) {
-        this.timeout(10000);
+        this.timeout(5000);
 
-        assert.fail('here');
+        var scriptPath = path.join(__dirname, 'scripts', 'child-process-inherit-streams.js');
+        var nodePath = tl.which('node', true);
+        var node = tl.tool(nodePath)
+            .arg(scriptPath)
+            .arg(`nodePath=${nodePath}`);
+        var options = <trm.IExecOptions>{
+            cwd: __dirname,
+            env: {},
+            silent: false,
+            failOnStdErr: true,
+            ignoreReturnCode: false,
+            outStream: process.stdout,
+            errStream: process.stderr
+        };
+        //options.env = null;
+
+        // var succeeded = false;
+        node.exec(options)
+            .then(function () {
+                //throw new Error('FOO2='+process.env.FOO2);
+                done();
+                // succeeded = true;
+                // assert.fail('should not have succeeded');
+            })
+            // .fail(function (err) {
+            //     if (succeeded) {
+            //         done(err);
+            //     }
+            //     else {
+            //         assert(err.message.indexOf('This may indicate the process failed to start') >= 0, `expected error message to indicate "This may indicate the process failed to start". actual error message: "${err}"`);
+            //         assert(output && output.length > 0, 'should have emitted stderr');
+            //         done();
+            //     }
+            // })
+            .fail(function (err) {
+                done(err);
+            });
         // var tool = tl.tool(tl.which('node', true))
         //     .arg('-e')
         //     .arg(`var fs = require('fs'); setTimeout(() => { try {`)
