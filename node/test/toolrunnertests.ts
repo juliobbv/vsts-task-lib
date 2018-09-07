@@ -440,98 +440,41 @@ describe('Toolrunner Tests', function () {
         let semaphorePath = path.join(testutil.getTestTemp(), 'child-process-semaphore.txt');
         fs.writeFileSync(semaphorePath, '');
 
-        try {
-            tl.which('node', true);
-            let scriptPath = path.join(__dirname, 'scripts', 'wait-for-file.js');
-            let bash = tl.tool(tl.which('bash', true))
-                .arg('-c')
-                .arg('ping -c 11 127.0.0.1 &');
-                //.arg(`node '${scriptPath}' 'file=${semaphorePath}' &`);
-            bash.on('debug', function (data) {
-                console.log('***DEBUG*** ' + data);
+        tl.which('node', true);
+        let scriptPath = path.join(__dirname, 'scripts', 'wait-for-file.js');
+        let bash = tl.tool(tl.which('bash', true))
+            .arg('-c')
+            .arg(`node '${scriptPath}' 'file=${semaphorePath}' &`);
+
+        let toolRunnerDebug = [];
+        bash.on('debug', function (data) {
+            toolRunnerDebug.push(data);
+        });
+
+        process.env['TASKLIB_TEST_TOOLRUNNER_EXITDELAY'] = 500; // 0.5 seconds
+
+        let options = <trm.IExecOptions>{
+            cwd: __dirname,
+            env: process.env,
+            silent: false,
+            failOnStdErr: true,
+            ignoreReturnCode: false,
+            outStream: process.stdout,
+            errStream: process.stdout
+        };
+
+        bash.exec(options)
+            .then(function () {
+                assert(toolRunnerDebug.filter((x) => x.indexOf('STDIO streams did not close') >= 0).length == 1, 'Did not find expected debug message');
+                done();
+            })
+            .fail(function (err) {
+                done(err);
+            })
+            .finally(function () {
+                fs.unlinkSync(semaphorePath);
+                delete process.env['TASKLIB_TEST_TOOLRUNNER_EXITDELAY'];
             });
-            
-            let options = <trm.IExecOptions>{
-                cwd: __dirname,
-                env: process.env,
-                silent: false,
-                failOnStdErr: true,
-                ignoreReturnCode: false,
-                outStream: process.stdout,
-                errStream: process.stdout
-            };
-
-            bash.exec(options)
-                .then(function () {
-                    done();
-                })
-                .fail(function (err) {
-                    done(err);
-                })
-        }
-        finally {
-            fs.unlinkSync(semaphorePath);
-        }
-        // //options.env = null;
-
-        // // var succeeded = false;
-        // node.exec(options)
-        //     .then(function () {
-        //         //throw new Error('FOO2='+process.env.FOO2);
-        //         done();
-        //         // succeeded = true;
-        //         // assert.fail('should not have succeeded');
-        //     })
-        //     // .fail(function (err) {
-        //     //     if (succeeded) {
-        //     //         done(err);
-        //     //     }
-        //     //     else {
-        //     //         assert(err.message.indexOf('This may indicate the process failed to start') >= 0, `expected error message to indicate "This may indicate the process failed to start". actual error message: "${err}"`);
-        //     //         assert(output && output.length > 0, 'should have emitted stderr');
-        //     //         done();
-        //     //     }
-        //     // })
-        //     .fail(function (err) {
-        //         done(err);
-        //     });
-        // // var tool = tl.tool(tl.which('node', true))
-        // //     .arg('-e')
-        // //     .arg(`var fs = require('fs'); setTimeout(() => { try {`)
-        // // var _testExecOptions = <trm.IExecOptions>{
-        // //     cwd: __dirname,
-        // //     env: {},
-        // //     silent: false,
-        // //     failOnStdErr: true,
-        // //     ignoreReturnCode: false,
-        // //     outStream: testutil.getNullStream(),
-        // //     errStream: testutil.getNullStream()
-        // // }
-
-        // // var output = '';
-        // // tool.on('stderr', (data) => {
-        // //     output = data.toString();
-        // // });
-
-        // // var succeeded = false;
-        // // tool.exec(_testExecOptions)
-        // //     .then(function () {
-        // //         succeeded = true;
-        // //         assert.fail('should not have succeeded');
-        // //     })
-        // //     .fail(function (err) {
-        // //         if (succeeded) {
-        // //             done(err);
-        // //         }
-        // //         else {
-        // //             assert(err.message.indexOf('This may indicate the process failed to start') >= 0, `expected error message to indicate "This may indicate the process failed to start". actual error message: "${err}"`);
-        // //             assert(output && output.length > 0, 'should have emitted stderr');
-        // //             done();
-        // //         }
-        // //     })
-        // //     .fail(function (err) {
-        // //         done(err);
-        // //     });
     })
     it('Exec pipe output to another tool, succeeds if both tools succeed', function (done) {
         this.timeout(30000);

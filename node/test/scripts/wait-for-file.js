@@ -17,15 +17,12 @@ if (!state.file) {
     throw new Error('file is not specified');
 }
 
-fs.writeFileSync('z_begin.txt', (new Date(Date.now())).toString());
-
 state.checkFile = function (s) {
     try {
         fs.statSync(s.file);
     }
     catch (err) {
         if (err.code == 'ENOENT') {
-            fs.writeFileSync('z_end.txt', (new Date(Date.now())).toString());
             return;
         }
 
@@ -36,23 +33,3 @@ state.checkFile = function (s) {
 };
 
 state.checkFile(state);
-
-// if (!isChild) {
-//     var child = cp.spawn(
-//         nodePath,
-//         [
-//             __filename,
-//             `nodePath=${nodePath}`,
-//             'isChild=true'
-//         ],
-//         {
-//             stdio: "inherit"
-//         });
-//     child.unref();
-//     return;
-// }
-// else {
-//     setTimeout(function () {
-//     },
-//     10000);
-// }

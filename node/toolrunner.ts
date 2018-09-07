@@ -6,7 +6,6 @@ import events = require('events');
 import child = require('child_process');
 import stream = require('stream');
 import im = require('./internal');
-import tcm = require('./taskcommand');
 import fs = require('fs');
 
 /**
@@ -491,6 +490,206 @@ export class ToolRunner extends events.EventEmitter {
         return result;
     }
 
+    private execWithPiping(options?: IExecOptions): Q.Promise<number> {
+        var defer = Q.defer<number>();
+
+        this._debug('exec tool: ' + this.toolPath);
+        this._debug('arguments:');
+        this.args.forEach((arg) => {
+            this._debug('   ' + arg);
+        });
+
+        let success = true;
+        options = this._cloneExecOptions(options);
+
+        if (!options.silent) {
+            options.outStream.write(this._getCommandString(options) + os.EOL);
+        }
+
+        let cp;
+        let toolPath: string = this.toolPath;
+        let toolPathFirst: string;
+        let successFirst = true;
+        let returnCodeFirst: number;
+        let fileStream: fs.WriteStream;
+        let waitingEvents: number = 0; // number of process or stream events we are waiting on to complete
+        let returnCode: number = 0;
+        let error;
+
+        toolPath = this.pipeOutputToTool.toolPath;
+        toolPathFirst = this.toolPath;
+
+        // Following node documentation example from this link on how to pipe output of one process to another
+        // https://nodejs.org/api/child_process.html#child_process_child_process_spawn_command_args_options
+
+        //start the child process for both tools
+        waitingEvents++;
+        var cpFirst = child.spawn(
+            this._getSpawnFileName(),
+            this._getSpawnArgs(options),
+            this._getSpawnOptions(options));
+        
+        waitingEvents ++;
+        cp = child.spawn(
+            this.pipeOutputToTool._getSpawnFileName(),
+            this.pipeOutputToTool._getSpawnArgs(options),
+            this.pipeOutputToTool._getSpawnOptions(options));
+
+        fileStream = this.pipeOutputToFile ? fs.createWriteStream(this.pipeOutputToFile) : null;
+        if (fileStream) {
+            waitingEvents ++;
+            fileStream.on('finish', () => {
+                waitingEvents--; //file write is complete
+                fileStream = null;
+                if(waitingEvents == 0) {
+                    if (error) {
+                        defer.reject(error);
+                    } else {
+                        defer.resolve(returnCode);
+                    }
+                }
+            });
+            fileStream.on('error', (err) => {
+                waitingEvents--; //there were errors writing to the file, write is done
+                this._debug(`Failed to pipe output of ${toolPathFirst} to file ${this.pipeOutputToFile}. Error = ${err}`);
+                fileStream = null;
+                if(waitingEvents == 0) {
+                    if (error) {
+                        defer.reject(error);
+                    } else {
+                        defer.resolve(returnCode);
+                    }
+                }
+            })
+        }
+
+        //pipe stdout of first tool to stdin of second tool
+        cpFirst.stdout.on('data', (data: Buffer) => {
+            try {
+                if (fileStream) {
+                    fileStream.write(data);
+                }
+                cp.stdin.write(data);
+            } catch (err) {
+                this._debug('Failed to pipe output of ' + toolPathFirst + ' to ' + toolPath);
+                this._debug(toolPath + ' might have exited due to errors prematurely. Verify the arguments passed are valid.');
+            }
+        });
+        cpFirst.stderr.on('data', (data: Buffer) => {
+            if (fileStream) {
+                fileStream.write(data);
+            }
+            successFirst = !options.failOnStdErr;
+            if (!options.silent) {
+                var s = options.failOnStdErr ? options.errStream : options.outStream;
+                s.write(data);
+            }
+        });
+        cpFirst.on('error', (err) => {
+            waitingEvents--; //first process is complete with errors
+            if (fileStream) {
+                fileStream.end();
+            }
+            cp.stdin.end();
+            error = new Error(toolPathFirst + ' failed. ' + err.message);
+            if(waitingEvents == 0) {
+                defer.reject(error);
+            }
+        });
+        cpFirst.on('close', (code, signal) => {
+            waitingEvents--; //first process is complete
+            if (code != 0 && !options.ignoreReturnCode) {
+                successFirst = false;
+                returnCodeFirst = code;
+                returnCode = returnCodeFirst;
+            }
+            this._debug('success of first tool:' + successFirst);
+            if (fileStream) {
+                fileStream.end();
+            }
+            cp.stdin.end();
+            if(waitingEvents == 0) {
+                if (error) {
+                    defer.reject(error);
+                } else {
+                    defer.resolve(returnCode);
+                }
+            }
+        });
+
+        var stdbuffer: string = '';
+        cp.stdout.on('data', (data: Buffer) => {
+            this.emit('stdout', data);
+
+            if (!options.silent) {
+                options.outStream.write(data);
+            }
+
+            this._processLineBuffer(data, stdbuffer, (line: string) => {
+                this.emit('stdline', line);
+            });
+        });
+
+        var errbuffer: string = '';
+        cp.stderr.on('data', (data: Buffer) => {
+            this.emit('stderr', data);
+
+            success = !options.failOnStdErr;
+            if (!options.silent) {
+                var s = options.failOnStdErr ? options.errStream : options.outStream;
+                s.write(data);
+            }
+
+            this._processLineBuffer(data, errbuffer, (line: string) => {
+                this.emit('errline', line);
+            });
+        });
+
+        cp.on('error', (err) => {
+            waitingEvents--; //process is done with errors
+            error = new Error(toolPath + ' failed. ' + err.message);
+            if(waitingEvents == 0) {
+                defer.reject(error);
+            }
+        });
+
+        cp.on('close', (code, signal) => {
+            waitingEvents--; //process is complete
+            this._debug('rc:' + code);
+            returnCode = code;
+
+            if (stdbuffer.length > 0) {
+                this.emit('stdline', stdbuffer);
+            }
+
+            if (errbuffer.length > 0) {
+                this.emit('errline', errbuffer);
+            }
+
+            if (code != 0 && !options.ignoreReturnCode) {
+                success = false;
+            }
+
+            this._debug('success:' + success);
+                
+            if (!successFirst) { //in the case output is piped to another tool, check exit code of both tools
+                error = new Error(toolPathFirst + ' failed with return code: ' + returnCodeFirst);
+            } else if (!success) {
+                error = new Error(toolPath + ' failed with return code: ' + code);
+            }
+
+            if(waitingEvents == 0) {
+                if (error) {
+                    defer.reject(error);
+                } else {
+                    defer.resolve(returnCode);
+                }
+            }
+        });
+
+        return <Q.Promise<number>>defer.promise;
+    }
+
     /**
      * Add argument
      * Append an argument or an array of arguments 
@@ -572,6 +771,10 @@ export class ToolRunner extends events.EventEmitter {
      * @returns   number
      */
     public exec(options?: IExecOptions): Q.Promise<number> {
+        if (this.pipeOutputToTool) {
+            return this.execWithPiping(options);
+        }
+
         var defer = Q.defer<number>();
 
         this._debug('exec tool: ' + this.toolPath);
@@ -585,270 +788,81 @@ export class ToolRunner extends events.EventEmitter {
             options.outStream.write(this._getCommandString(options) + os.EOL);
         }
 
-        if (this.pipeOutputToTool) {
-            // Following node documentation example from this link on how to pipe output of one process to another
-            // https://nodejs.org/api/child_process.html#child_process_child_process_spawn_command_args_options
+        let state = new ExecState(options, this.toolPath);
+        state.on('debug', (message) => {
+            this._debug(message);
+        });
 
-            let state = new ExecState(this, defer, options, this.toolPath, this.pipeOutputToTool.toolPath, this.pipeOutputToFile);
+        let cp = child.spawn(this._getSpawnFileName(), this._getSpawnArgs(options), this._getSpawnOptions(options));
 
-            // start the child process for both tools
-            let cp1 = child.spawn(
-                this._getSpawnFileName(),
-                this._getSpawnArgs(options),
-                this._getSpawnOptions(options));
+        var stdbuffer: string = '';
+        cp.stdout.on('data', (data: Buffer) => {
+            this.emit('stdout', data);
 
-            let cp2 = child.spawn(
-                this.pipeOutputToTool._getSpawnFileName(),
-                this.pipeOutputToTool._getSpawnArgs(options),
-                this.pipeOutputToTool._getSpawnOptions(options));
-
-            let fileStream = this.pipeOutputToFile ? fs.createWriteStream(this.pipeOutputToFile) : null;
-            if (fileStream) {
-                fileStream.on('finish', () => {
-                    state.fileClosed = true;
-                    this._debug(`Finished writing file '${this.pipeOutputToFile}'`);
-                    fileStream = null;
-                    state.CheckComplete();
-                });
-
-                fileStream.on('error', (err) => {
-                    state.fileClosed = true;
-                    this._debug(`Failed to pipe output of '${this.toolPath}' to file '${this.pipeOutputToFile}'. Error: ${err}`);
-                    fileStream = null;
-                    state.CheckComplete();
-                })
+            if (!options.silent) {
+                options.outStream.write(data);
             }
 
-            // pipe stdout of first tool to stdin of second tool
-            let fileStreamError: boolean;
-            let stdinError: boolean;
-            cp1.stdout.on('data', (data: Buffer) => {
-                if (fileStream && !fileStreamError) {
-                    try {
-                        fileStream.write(data);
-                    }
-                    catch (err) {
-                        fileStreamError = true;
-                        this._debug(`Failed to pipe the output of '${this.toolPath}' to the file '${this.pipeOutputToFile}'. Error: ${err}`);
-                    }
-                }
-
-                if (!stdinError) {
-                    try {
-                        cp2.stdin.write(data);
-                    }
-                    catch (err) {
-                        stdinError = true;
-                        this._debug(`Failed to pipe the output of '${this.toolPath}' to '${this.pipeOutputToTool.toolPath}'. The tool '${this.pipeOutputToTool.toolPath}' might have exited due to errors. Verify the arguments passed are valid. Error: ${err}`);
-                    }
-                }
+            this._processLineBuffer(data, stdbuffer, (line: string) => {
+                this.emit('stdline', line);
             });
+        });
 
-            cp1.stderr.on('data', (data: Buffer) => {
-                state.processStderr = true;
+        var errbuffer: string = '';
+        cp.stderr.on('data', (data: Buffer) => {
+            state.processStderr = true;
+            this.emit('stderr', data);
 
-                if (fileStream && !fileStreamError) {
-                    try {
-                        fileStream.write(data);
-                    }
-                    catch (err) {
-                        fileStreamError = true;
-                        this._debug(`Failed to pipe the output of '${this.toolPath}' to the file '${this.pipeOutputToFile}'. Error: ${err}`);
-                    }
-                }
+            if (!options.silent) {
+                var s = options.failOnStdErr ? options.errStream : options.outStream;
+                s.write(data);
+            }
 
-                if (!options.silent) {
-                    var s = options.failOnStdErr ? options.errStream : options.outStream;
-                    s.write(data);
-                }
+            this._processLineBuffer(data, errbuffer, (line: string) => {
+                this.emit('errline', line);
             });
+        });
 
-            cp1.on('error', (err) => {
-                state.processError = err.message;
-                state.processExited = true;
-                state.processClosed = true;
+        cp.on('error', (err) => {
+            state.processError = err.message;
+            state.processExited = true;
+            state.processClosed = true;
+            state.CheckComplete();
+        });
 
-                if (fileStream) {
-                    fileStream.end();
-                }
+        cp.on('exit', (code, signal) => {
+            state.processExitCode = code;
+            state.processExited = true;
+            this._debug(`Exit code ${code} received from tool '${this.toolPath}'`);
+            state.CheckComplete()
+        });
 
-                cp2.stdin.end();
-                state.CheckComplete();
-            });
+        cp.on('close', (code, signal) => {
+            state.processExitCode = code;
+            state.processExited = true;
+            state.processClosed = true;
+            this._debug(`STDIO streams have closed for tool '${this.toolPath}'`)
+            state.CheckComplete();
+        });
 
-            cp1.on('exit', (code, signal) => {
-                state.processExitCode = code;
-                state.processExited = true;
-                this._debug(`Exit code ${code} received from tool '${this.toolPath}'`);
-                state.CheckComplete()
-            });
+        state.on('done', (error, exitCode) => {
+            if (stdbuffer.length > 0) {
+                this.emit('stdline', stdbuffer);
+            }
 
-            let fileStreamClosed: boolean;
-            let stdinClosed: boolean;
-            cp1.on('close', (code, signal) => {
-                state.processExitCode = code;
-                state.processExited = true;
-                state.processClosed = true;
+            if (errbuffer.length > 0) {
+                this.emit('errline', errbuffer);
+            }
 
-                if (fileStream) {
-                    fileStream.end();
-                    fileStreamClosed = true;
-                }
+            cp.removeAllListeners();
 
-                cp2.stdin.end();
-                stdinClosed = true;
-                state.CheckComplete();
-            });
-
-            var stdbuffer: string = '';
-            cp2.stdout.on('data', (data: Buffer) => {
-                this.emit('stdout', data);
-
-                if (!options.silent) {
-                    options.outStream.write(data);
-                }
-
-                this._processLineBuffer(data, stdbuffer, (line: string) => {
-                    this.emit('stdline', line);
-                });
-            });
-
-            var errbuffer: string = '';
-            cp2.stderr.on('data', (data: Buffer) => {
-                state.process2Stderr = true;
-                this.emit('stderr', data);
-
-                if (!options.silent) {
-                    var s = options.failOnStdErr ? options.errStream : options.outStream;
-                    s.write(data);
-                }
-
-                this._processLineBuffer(data, errbuffer, (line: string) => {
-                    this.emit('errline', line);
-                });
-            });
-
-            cp2.on('error', (err) => {
-                state.process2Error = err.message;
-                state.process2Exited = true;
-                state.process2Closed = true;
-                state.CheckComplete();
-            });
-
-            cp2.on('exit', (code, signal) => {
-                state.process2ExitCode = code;
-                state.process2Exited = true;
-                this._debug(`Exit code ${code} received from tool '${this.pipeOutputToTool.toolPath}'`);
-                state.CheckComplete()
-            });
-
-            cp2.on('close', (code, signal) => {
-                state.process2ExitCode = code;
-                state.process2Exited = true;
-                state.process2Closed = true;
-                this._debug(`STDIO streams have closed for tool '${this.pipeOutputToTool.toolPath}'`)
-                state.CheckComplete();
-            });
-
-            defer.promise.finally(() => {
-                if (stdbuffer.length > 0) {
-                    this.emit('stdline', stdbuffer);
-                }
-
-                if (errbuffer.length > 0) {
-                    this.emit('errline', errbuffer);
-                }
-
-                if (fileStream && !fileStreamClosed) {
-                    try {
-                        fileStream.end();
-                        fileStreamClosed = true;
-                    }
-                    catch (err) {
-                        this._debug(`Failed to close file stream for file '${this.pipeOutputToFile}'. Error: ${err}`);
-                    }
-                }
-
-                if (!stdinClosed) {
-                    try {
-                        cp2.stdin.end();
-                        stdinClosed = true;
-                    }
-                    catch (err) {
-                        this._debug(`Failed to close STDIN for tool '${this.pipeOutputToTool.toolPath}'`);
-                    }
-                }
-
-                cp1.removeAllListeners();
-                cp2.removeAllListeners();
-            });
-        } else {
-            let state = new ExecState(this, defer, options, this.toolPath);
-
-            let cp = child.spawn(this._getSpawnFileName(), this._getSpawnArgs(options), this._getSpawnOptions(options));
-
-            var stdbuffer: string = '';
-            cp.stdout.on('data', (data: Buffer) => {
-                this.emit('stdout', data);
-
-                if (!options.silent) {
-                    options.outStream.write(data);
-                }
-
-                this._processLineBuffer(data, stdbuffer, (line: string) => {
-                    this.emit('stdline', line);
-                });
-            });
-
-            var errbuffer: string = '';
-            cp.stderr.on('data', (data: Buffer) => {
-                state.processStderr = true;
-                this.emit('stderr', data);
-
-                if (!options.silent) {
-                    var s = options.failOnStdErr ? options.errStream : options.outStream;
-                    s.write(data);
-                }
-
-                this._processLineBuffer(data, errbuffer, (line: string) => {
-                    this.emit('errline', line);
-                });
-            });
-
-            cp.on('error', (err) => {
-                state.processError = err.message;
-                state.processExited = true;
-                state.processClosed = true;
-                state.CheckComplete();
-            });
-
-            cp.on('exit', (code, signal) => {
-                state.processExitCode = code;
-                state.processExited = true;
-                this._debug(`Exit code ${code} received from tool '${this.toolPath}'`);
-                state.CheckComplete()
-            });
-
-            cp.on('close', (code, signal) => {
-                state.processExitCode = code;
-                state.processExited = true;
-                state.processClosed = true;
-                this._debug(`STDIO streams have closed for tool '${this.toolPath}'`)
-                state.CheckComplete();
-            });
-
-            defer.promise.finally(() => {
-                if (stdbuffer.length > 0) {
-                    this.emit('stdline', stdbuffer);
-                }
-
-                if (errbuffer.length > 0) {
-                    this.emit('errline', errbuffer);
-                }
-
-                cp.removeAllListeners();
-            });
-        }
+            if (error) {
+                defer.reject(error);
+            }
+            else {
+                defer.resolve(exitCode);
+            }
+        });
 
         return <Q.Promise<number>>defer.promise;
     }
@@ -896,85 +910,51 @@ export class ToolRunner extends events.EventEmitter {
     }
 }
 
-class ExecState {
+class ExecState extends events.EventEmitter {
     constructor(
-        emitter: events.EventEmitter,
-        defer: Q.Deferred<number>,
         options: IExecOptions,
-        toolPath: string,
-        toolPath2?: string,
-        filePath?: string) {
+        toolPath: string) {
+
+        super();
 
         if (!toolPath) {
             throw new Error('toolPath must not be empty');
         }
 
-        if (!toolPath2 && filePath) {
-            throw new Error('filePath must not be supplied when toolPath2 is empty');
-        }
-
-        this.emitter = emitter;
-        this.defer = defer;
         this.options = options;
         this.toolPath = toolPath;
-        this.toolPath2 = toolPath2;
-        this.filePath = filePath;
         let delay = process.env['TASKLIB_TEST_TOOLRUNNER_EXITDELAY'];
         if (delay) {
             this.delay = parseInt(delay);
         }
     }
 
-    fileClosed: boolean; // tracks whether the file has closed
     processClosed: boolean; // tracks whether the process has exited and stdio is closed
     processError: string;
     processExitCode: number;
     processExited: boolean; // tracks whether the process has exited
     processStderr: boolean; // tracks whether stderr was written to
-    process2Closed: boolean;
-    process2Error: string;
-    process2ExitCode: number;
-    process2Exited: boolean;
-    process2Stderr: boolean;
-    private delay = 10; // seconds
-    private defer: Q.Deferred<number>;
+    private delay = 10000; // 10 seconds
     private done: boolean;
-    private emitter: events.EventEmitter;
-    private filePath: string;
     private options: IExecOptions;
     private timeouts = [];
     private toolPath: string;
-    private toolPath2: string;
 
     public CheckComplete(): void {
         if (this.done) {
             return;
         }
 
-        if (this.filePath && !this.fileClosed) {
-            return;
+        if (this.processClosed) {
+            this._setResult();
         }
-
-        if (this.toolPath2) {
-            if (this.processClosed && this.process2Closed) {
-                this._setResult();
-            }
-            else if (this.processExited && this.process2Exited) {
-                this.timeouts.push(setTimeout(ExecState.HandleTimeout, this.delay * 1000, this));
-            }
-        }
-        else {
-            if (this.processClosed) {
-                this._setResult();
-            }
-            else if (this.processExited) {
-                this.timeouts.push(setTimeout(ExecState.HandleTimeout, this.delay * 1000, this));
-            }
+        else if (this.processExited) {
+            this.timeouts.push(setTimeout(ExecState.HandleTimeout, this.delay, this));
         }
     }
 
     private _debug(message): void {
-        this.emitter.emit('debug', message);
+        this.emit('debug', message);
     }
 
     private _setResult(): void {
@@ -992,35 +972,13 @@ class ExecState {
             }
         }
 
-        if (!error && this.toolPath2) {
-            if (this.process2Error) {
-                error = new Error(im._loc('LIB_ProcessError', this.toolPath2, this.process2Error));
-            }
-            else if (this.process2ExitCode != 0 && !this.options.ignoreReturnCode) {
-                error = new Error(im._loc('LIB_ProcessExitCode', this.toolPath2, this.process2ExitCode));
-            }
-            else if (this.process2Stderr && this.options.failOnStdErr) {
-                error = new Error(im._loc('LIB_ProcessStderr', this.toolPath2));
-            }
-        }
-
-        // satisfy the promise
-        if (error) {
-            this.defer.reject(error);
-        }
-        else if (this.toolPath2) {
-            this.defer.resolve(this.process2ExitCode);
-        }
-        else {
-            this.defer.resolve(this.processExitCode);
-        }
-
         // clear the timeouts
         while (this.timeouts.length > 0) {
             clearTimeout(this.timeouts.pop());
         }
 
         this.done = true;
+        this.emit('done', error, this.processExitCode);
     }
 
     private static HandleTimeout(state: ExecState) {
@@ -1028,12 +986,8 @@ class ExecState {
             return;
         }
 
-        if (!state.process2Closed && state.process2Exited) {
-            state._debug(`The STDIO streams did not close within ${state.delay} seconds of the exit event from process '${state.toolPath2}'. This may indicate a child process inherited the STDIO streams and has not yet exited.`);
-        }
-
         if (!state.processClosed && state.processExited) {
-            state._debug(`The STDIO streams did not close within ${state.delay} seconds of the exit event from process '${state.toolPath}'. This may indicate a child process inherited the STDIO streams and has not yet exited.`);
+            state._debug(`The STDIO streams did not close within ${state.delay / 1000} seconds of the exit event from process '${state.toolPath}'. This may indicate a child process inherited the STDIO streams and has not yet exited.`);
         }
 
         state._setResult();
