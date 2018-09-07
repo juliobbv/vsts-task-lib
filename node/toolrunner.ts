@@ -589,7 +589,7 @@ export class ToolRunner extends events.EventEmitter {
             // Following node documentation example from this link on how to pipe output of one process to another
             // https://nodejs.org/api/child_process.html#child_process_child_process_spawn_command_args_options
 
-            let state = new ExecState(this._debug, defer, options, this.toolPath, this.pipeOutputToTool.toolPath, this.pipeOutputToFile);
+            let state = new ExecState(this, defer, options, this.toolPath, this.pipeOutputToTool.toolPath, this.pipeOutputToFile);
 
             // start the child process for both tools
             let cp1 = child.spawn(
@@ -683,6 +683,8 @@ export class ToolRunner extends events.EventEmitter {
                 state.CheckComplete()
             });
 
+            let fileStreamClosed: boolean;
+            let stdinClosed: boolean;
             cp1.on('close', (code, signal) => {
                 state.processExitCode = code;
                 state.processExited = true;
@@ -690,9 +692,11 @@ export class ToolRunner extends events.EventEmitter {
 
                 if (fileStream) {
                     fileStream.end();
+                    fileStreamClosed = true;
                 }
 
                 cp2.stdin.end();
+                stdinClosed = true;
                 state.CheckComplete();
             });
 
@@ -743,7 +747,10 @@ export class ToolRunner extends events.EventEmitter {
                 state.process2Exited = true;
                 state.process2Closed = true;
                 this._debug(`STDIO streams have closed for tool '${this.pipeOutputToTool.toolPath}'`)
+                state.CheckComplete();
+            });
 
+            defer.promise.finally(() => {
                 if (stdbuffer.length > 0) {
                     this.emit('stdline', stdbuffer);
                 }
@@ -752,10 +759,31 @@ export class ToolRunner extends events.EventEmitter {
                     this.emit('errline', errbuffer);
                 }
 
-                state.CheckComplete();
+                if (fileStream && !fileStreamClosed) {
+                    try {
+                        fileStream.end();
+                        fileStreamClosed = true;
+                    }
+                    catch (err) {
+                        this._debug(`Failed to close file stream for file '${this.pipeOutputToFile}'. Error: ${err}`);
+                    }
+                }
+
+                if (!stdinClosed) {
+                    try {
+                        cp2.stdin.end();
+                        stdinClosed = true;
+                    }
+                    catch (err) {
+                        this._debug(`Failed to close STDIN for tool '${this.pipeOutputToTool.toolPath}'`);
+                    }
+                }
+
+                cp1.removeAllListeners();
+                cp2.removeAllListeners();
             });
         } else {
-            let state = new ExecState(this._debug, defer, options, this.toolPath);
+            let state = new ExecState(this, defer, options, this.toolPath);
 
             let cp = child.spawn(this._getSpawnFileName(), this._getSpawnArgs(options), this._getSpawnOptions(options));
 
@@ -806,7 +834,10 @@ export class ToolRunner extends events.EventEmitter {
                 state.processExited = true;
                 state.processClosed = true;
                 this._debug(`STDIO streams have closed for tool '${this.toolPath}'`)
+                state.CheckComplete();
+            });
 
+            defer.promise.finally(() => {
                 if (stdbuffer.length > 0) {
                     this.emit('stdline', stdbuffer);
                 }
@@ -815,7 +846,7 @@ export class ToolRunner extends events.EventEmitter {
                     this.emit('errline', errbuffer);
                 }
 
-                state.CheckComplete();
+                cp.removeAllListeners();
             });
         }
 
@@ -867,7 +898,7 @@ export class ToolRunner extends events.EventEmitter {
 
 class ExecState {
     constructor(
-        debug: (any),
+        emitter: events.EventEmitter,
         defer: Q.Deferred<number>,
         options: IExecOptions,
         toolPath: string,
@@ -882,7 +913,7 @@ class ExecState {
             throw new Error('filePath must not be supplied when toolPath2 is empty');
         }
 
-        this.debug = debug;
+        this.emitter = emitter;
         this.defer = defer;
         this.options = options;
         this.toolPath = toolPath;
@@ -906,14 +937,14 @@ class ExecState {
     process2Exited: boolean;
     process2Stderr: boolean;
     private delay = 10; // seconds
-    private debug: (any);
     private defer: Q.Deferred<number>;
     private done: boolean;
+    private emitter: events.EventEmitter;
     private filePath: string;
     private options: IExecOptions;
+    private timeouts = [];
     private toolPath: string;
     private toolPath2: string;
-    private timeouts = [];
 
     public CheckComplete(): void {
         if (this.done) {
@@ -940,6 +971,10 @@ class ExecState {
                 this.timeouts.push(setTimeout(ExecState.HandleTimeout, this.delay * 1000, this));
             }
         }
+    }
+
+    private _debug(message): void {
+        this.emitter.emit('debug', message);
     }
 
     private _setResult(): void {
@@ -994,11 +1029,11 @@ class ExecState {
         }
 
         if (!state.process2Closed && state.process2Exited) {
-            state.debug(`The STDIO streams did not close within ${state.delay} seconds of the exit event from process '${state.toolPath2}'. This may indicate child processes the inherited the STDIO streams and the child processes have not yet exited.`);
+            state._debug(`The STDIO streams did not close within ${state.delay} seconds of the exit event from process '${state.toolPath2}'. This may indicate a child process inherited the STDIO streams and has not yet exited.`);
         }
 
         if (!state.processClosed && state.processExited) {
-            state.debug(`The STDIO streams did not close within ${state.delay} seconds of the exit event from process '${state.toolPath}'. This may indicate child processes the inherited the STDIO streams and the child processes have not yet exited.`);
+            state._debug(`The STDIO streams did not close within ${state.delay} seconds of the exit event from process '${state.toolPath}'. This may indicate a child process inherited the STDIO streams and has not yet exited.`);
         }
 
         state._setResult();

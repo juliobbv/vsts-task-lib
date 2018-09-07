@@ -435,82 +435,103 @@ describe('Toolrunner Tests', function () {
             });
     })
     it('Handles child process holding streams open', function (done) {
-        this.timeout(5000);
+        this.timeout(20000);
 
-        var scriptPath = path.join(__dirname, 'scripts', 'child-process-inherit-streams.js');
-        var nodePath = tl.which('node', true);
-        var node = tl.tool(nodePath)
-            .arg(scriptPath)
-            .arg(`nodePath=${nodePath}`);
-        var options = <trm.IExecOptions>{
-            cwd: __dirname,
-            env: {},
-            silent: false,
-            failOnStdErr: true,
-            ignoreReturnCode: false,
-            outStream: process.stdout,
-            errStream: process.stderr
-        };
-        //options.env = null;
+        let semaphorePath = path.join(testutil.getTestTemp(), 'child-process-semaphore.txt');
+        fs.writeFileSync(semaphorePath, '');
 
-        // var succeeded = false;
-        node.exec(options)
-            .then(function () {
-                //throw new Error('FOO2='+process.env.FOO2);
-                done();
-                // succeeded = true;
-                // assert.fail('should not have succeeded');
-            })
-            // .fail(function (err) {
-            //     if (succeeded) {
-            //         done(err);
-            //     }
-            //     else {
-            //         assert(err.message.indexOf('This may indicate the process failed to start') >= 0, `expected error message to indicate "This may indicate the process failed to start". actual error message: "${err}"`);
-            //         assert(output && output.length > 0, 'should have emitted stderr');
-            //         done();
-            //     }
-            // })
-            .fail(function (err) {
-                done(err);
+        try {
+            tl.which('node', true);
+            let scriptPath = path.join(__dirname, 'scripts', 'wait-for-file.js');
+            let bash = tl.tool(tl.which('bash', true))
+                .arg('-c')
+                .arg('ping -c 11 127.0.0.1 &');
+                //.arg(`node '${scriptPath}' 'file=${semaphorePath}' &`);
+            bash.on('debug', function (data) {
+                console.log('***DEBUG*** ' + data);
             });
-        // var tool = tl.tool(tl.which('node', true))
-        //     .arg('-e')
-        //     .arg(`var fs = require('fs'); setTimeout(() => { try {`)
-        // var _testExecOptions = <trm.IExecOptions>{
-        //     cwd: __dirname,
-        //     env: {},
-        //     silent: false,
-        //     failOnStdErr: true,
-        //     ignoreReturnCode: false,
-        //     outStream: testutil.getNullStream(),
-        //     errStream: testutil.getNullStream()
-        // }
+            
+            let options = <trm.IExecOptions>{
+                cwd: __dirname,
+                env: process.env,
+                silent: false,
+                failOnStdErr: true,
+                ignoreReturnCode: false,
+                outStream: process.stdout,
+                errStream: process.stdout
+            };
 
-        // var output = '';
-        // tool.on('stderr', (data) => {
-        //     output = data.toString();
-        // });
+            bash.exec(options)
+                .then(function () {
+                    done();
+                })
+                .fail(function (err) {
+                    done(err);
+                })
+        }
+        finally {
+            fs.unlinkSync(semaphorePath);
+        }
+        // //options.env = null;
 
-        // var succeeded = false;
-        // tool.exec(_testExecOptions)
+        // // var succeeded = false;
+        // node.exec(options)
         //     .then(function () {
-        //         succeeded = true;
-        //         assert.fail('should not have succeeded');
+        //         //throw new Error('FOO2='+process.env.FOO2);
+        //         done();
+        //         // succeeded = true;
+        //         // assert.fail('should not have succeeded');
         //     })
-        //     .fail(function (err) {
-        //         if (succeeded) {
-        //             done(err);
-        //         }
-        //         else {
-        //             assert(err.message.indexOf('This may indicate the process failed to start') >= 0, `expected error message to indicate "This may indicate the process failed to start". actual error message: "${err}"`);
-        //             assert(output && output.length > 0, 'should have emitted stderr');
-        //             done();
-        //         }
-        //     })
+        //     // .fail(function (err) {
+        //     //     if (succeeded) {
+        //     //         done(err);
+        //     //     }
+        //     //     else {
+        //     //         assert(err.message.indexOf('This may indicate the process failed to start') >= 0, `expected error message to indicate "This may indicate the process failed to start". actual error message: "${err}"`);
+        //     //         assert(output && output.length > 0, 'should have emitted stderr');
+        //     //         done();
+        //     //     }
+        //     // })
         //     .fail(function (err) {
         //         done(err);
         //     });
+        // // var tool = tl.tool(tl.which('node', true))
+        // //     .arg('-e')
+        // //     .arg(`var fs = require('fs'); setTimeout(() => { try {`)
+        // // var _testExecOptions = <trm.IExecOptions>{
+        // //     cwd: __dirname,
+        // //     env: {},
+        // //     silent: false,
+        // //     failOnStdErr: true,
+        // //     ignoreReturnCode: false,
+        // //     outStream: testutil.getNullStream(),
+        // //     errStream: testutil.getNullStream()
+        // // }
+
+        // // var output = '';
+        // // tool.on('stderr', (data) => {
+        // //     output = data.toString();
+        // // });
+
+        // // var succeeded = false;
+        // // tool.exec(_testExecOptions)
+        // //     .then(function () {
+        // //         succeeded = true;
+        // //         assert.fail('should not have succeeded');
+        // //     })
+        // //     .fail(function (err) {
+        // //         if (succeeded) {
+        // //             done(err);
+        // //         }
+        // //         else {
+        // //             assert(err.message.indexOf('This may indicate the process failed to start') >= 0, `expected error message to indicate "This may indicate the process failed to start". actual error message: "${err}"`);
+        // //             assert(output && output.length > 0, 'should have emitted stderr');
+        // //             done();
+        // //         }
+        // //     })
+        // //     .fail(function (err) {
+        // //         done(err);
+        // //     });
     })
     it('Exec pipe output to another tool, succeeds if both tools succeed', function (done) {
         this.timeout(30000);
@@ -716,25 +737,26 @@ describe('Toolrunner Tests', function () {
             var grep = tl.tool(tl.which('grep', true));
             grep.arg('--?');
 
-            var ps = tl.tool(tl.which('ps', true));
-            ps.arg('ax');
-            ps.pipeExecOutputToTool(grep);
+            var node = tl.tool(tl.which('node', true))
+                .arg('-e')
+                .arg('console.log("line1"); setTimeout(function () { console.log("line2"); }, 200);'); // allow long enough to hook up stdout to stdin
+            node.pipeExecOutputToTool(grep);
 
             var output = '';
-            ps.on('stdout', (data) => {
+            node.on('stdout', (data) => {
                 output += data.toString();
             });
 
             var errOut = '';
-            ps.on('stderr', (data) => {
+            node.on('stderr', (data) => {
                 errOut += data.toString();
             })
 
             var succeeded = false;
-            ps.exec(_testExecOptions)
+            node.exec(_testExecOptions)
                 .then(function (code) {
                     succeeded = true;
-                    assert.fail('ps ax | grep --? was a bad command and it did not fail');
+                    assert.fail('node [...] | grep --? was a bad command and it did not fail');
                 })
                 .fail(function (err) {
                     if (succeeded) {
