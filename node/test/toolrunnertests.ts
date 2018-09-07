@@ -442,24 +442,24 @@ describe('Toolrunner Tests', function () {
 
         let nodePath = tl.which('node', true);
         let scriptPath = path.join(__dirname, 'scripts', 'wait-for-file.js');
-        let bash: trm.ToolRunner;
+        let shell: trm.ToolRunner;
         if (os.platform() == 'win32') {
-            bash = tl.tool(tl.which('cmd.exe', true))
+            shell = tl.tool(tl.which('cmd.exe', true))
                 .arg('/D') // Disable execution of AutoRun commands from registry.
                 .arg('/E:ON') // Enable command extensions. Note, command extensions are enabled by default, unless disabled via registry.
                 .arg('/V:OFF') // Disable delayed environment expansion. Note, delayed environment expansion is disabled by default, unless enabled via registry.
                 .arg('/S') // Will cause first and last quote after /C to be stripped.
                 .arg('/C')
-                .arg(`"start /B "" "${nodePath}" "${scriptPath}" "file=${semaphorePath}""`);
+                .arg(`"start "" /B "${nodePath}" "${scriptPath}" "file=${semaphorePath}""`);
         }
         else {
-            bash = tl.tool(tl.which('bash', true))
+            shell = tl.tool(tl.which('bash', true))
                 .arg('-c')
                 .arg(`node '${scriptPath}' 'file=${semaphorePath}' &`);
         }
 
         let toolRunnerDebug = [];
-        bash.on('debug', function (data) {
+        shell.on('debug', function (data) {
             toolRunnerDebug.push(data);
         });
 
@@ -476,7 +476,7 @@ describe('Toolrunner Tests', function () {
             windowsVerbatimArguments: true
         };
 
-        bash.exec(options)
+        shell.exec(options)
             .then(function () {
                 assert(toolRunnerDebug.filter((x) => x.indexOf('STDIO streams did not close') >= 0).length == 1, 'Did not find expected debug message');
                 done();
