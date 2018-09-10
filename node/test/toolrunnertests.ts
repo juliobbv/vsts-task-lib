@@ -435,7 +435,7 @@ describe('Toolrunner Tests', function () {
             });
     })
     it('Handles child process holding streams open', function (done) {
-        this.timeout(20000);
+        this.timeout(10000);
 
         let semaphorePath = path.join(testutil.getTestTemp(), 'child-process-semaphore.txt');
         fs.writeFileSync(semaphorePath, '');

@@ -937,7 +937,7 @@ class ExecState extends events.EventEmitter {
     private delay = 10000; // 10 seconds
     private done: boolean;
     private options: IExecOptions;
-    private timeouts = [];
+    private timeout;
     private toolPath: string;
 
     public CheckComplete(): void {
@@ -949,7 +949,7 @@ class ExecState extends events.EventEmitter {
             this._setResult();
         }
         else if (this.processExited) {
-            this.timeouts.push(setTimeout(ExecState.HandleTimeout, this.delay, this));
+            this.timeout = setTimeout(ExecState.HandleTimeout, this.delay, this);
         }
     }
 
@@ -973,8 +973,9 @@ class ExecState extends events.EventEmitter {
         }
 
         // clear the timeouts
-        while (this.timeouts.length > 0) {
-            clearTimeout(this.timeouts.pop());
+        while (this.timeout) {
+            clearTimeout(this.timeout);
+            this.timeout = null;
         }
 
         this.done = true;
