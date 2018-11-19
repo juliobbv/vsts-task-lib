@@ -29,6 +29,8 @@ Use the details below to determine when specific agent features were added:
 * `powershell3` handler
   - Added in 1.95.1
   - Updated in 1.97 to propagate `Data` property for endpoints
+* `node10` handler
+  - Added in [ToDo juliobv: get final version]. Used node v10.13.0.
 
 ### Variables
 

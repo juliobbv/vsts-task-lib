@@ -253,7 +253,7 @@
       "additionalProperties": false,
       "description": "Execution options for this task",
       "properties": {
-        "Node": {
+        "Node": { // ToDo juliobv: should I update this to Node10?
           "$ref": "#/definitions/executionObject"
         },
         "PowerShell3": {
